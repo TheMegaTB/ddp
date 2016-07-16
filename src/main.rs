@@ -53,12 +53,12 @@ fn generate_uuid(input: &String) -> Vec<u8> {
 
 fn calculate_block_size(total_size: usize) -> usize {
     let base: usize = 2;
-    let mut power = 2;
+    let mut power = 4;
     let mut block_size = 2;
 
     while block_size < 1000000 && total_size / block_size > 1000 {
-        power += 1;
-        block_size = base.pow(power);
+        power += 4;
+        block_size = base * power;
     }
 
     block_size
@@ -66,9 +66,7 @@ fn calculate_block_size(total_size: usize) -> usize {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct FileMetadata {
-    /// SHA256 Hash of the filename
-    id: Vec<u8>,
-    /// SHA512 Hash of the files content
+    /// SHA256 Hash of the files content
     hash: Vec<u8>,
     /// Total size of the file in bytes
     size: usize
@@ -98,14 +96,27 @@ fn convert_block_sources(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) 
     }).collect()
 }
 
-fn sort_by_block_availability(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) -> Vec<usize> {
-    let block_availability = convert_block_sources(filesize, sources).into_iter().map(|block| block.len()).collect();
-    println!("{:?}", block_availability);
+use std::cmp::Ordering;
+fn sort_by_block_availability(sources: Vec<Vec<IpAddr>>) -> Vec<usize> {
+    let mut block_availability: Vec<_> = sources.into_iter().enumerate().map(|(id, block)| (id, block.len())).collect();
+    // Put the available ones at the top and sort them by their availability (lowest first to speed up distribution)
+    block_availability.sort_by(|a, b|
+        // If none of them is available they are equal
+        if a.1 == 0 && b.1 == 0 { Ordering::Equal }
+        // If a is not available then b is better
+        else if a.1 == 0 { Ordering::Greater }
+        // If b is not available then a is better
+        else if b.1 == 0 { Ordering::Less }
+        // If both are available then their availability will be compared
+        else { a.1.cmp(&b.1) }
+    );
+    // Strip the availability value
+    let block_availability = block_availability.into_iter().map(|(id, _)| id).collect();
     block_availability
 }
 
-fn request(filename: String) {
-    info!("Requesting {}", to_hex_string(&generate_uuid(&filename)));
+fn request(hash: String) {
+    info!("Requesting {}", to_hex_string(&generate_uuid(&hash)));
 
     let sock = UDPSocket::new().create_handle();
     let sock_addr = sock.socket.local_addr().unwrap();
@@ -136,7 +147,7 @@ fn request(filename: String) {
         }
     });
 
-    let mut uuid = generate_uuid(&filename);
+    let mut uuid = generate_uuid(&hash);
     uuid.push(1); // Request file details in addition to block lists
     std::thread::sleep(std::time::Duration::from_millis(500)); //TODO: Replace this with waiting for the TCP socket
     sock.send_to_multicast(&uuid); // Send request
@@ -172,7 +183,12 @@ fn request(filename: String) {
 
     match metadata {
         Some(metadata) => {
-            sort_by_block_availability(metadata.size, block_sources);
+            //TODO: Compare hash in metadata w/ local UUID
+            let blocks = convert_block_sources(metadata.size, block_sources);
+            for block in sort_by_block_availability(blocks.clone()).iter() {
+                let ref current_sources = blocks[*block];
+                println!("Currently loading block {} from sources {:?}", block, current_sources);
+            }
         },
         None => {}
     }
@@ -186,11 +202,10 @@ fn announce() -> JoinHandle<()> {
     // Example file
     files.push(File {
         metadata: FileMetadata {
-            id: generate_uuid(&"firefox.pkg".to_string()),
-            hash: vec![0; 64],
-            size: 55899986
+            hash: generate_uuid(&"some random file contents\n".to_string()),
+            size: 100000
         },
-        blocks: vec![(0, 2), (1, 1), (2, 0), (3, 0)]
+        blocks: vec![(0, 2), (1, 1), (2, 0)]
     });
 
     spawn(move || {
@@ -202,7 +217,7 @@ fn announce() -> JoinHandle<()> {
 
             debug!("Received request for file {:?}", to_hex_string(&data));
 
-            let matching_files = files.iter_mut().filter(|f| f.metadata.id == data);
+            let matching_files = files.iter_mut().filter(|f| f.metadata.hash == data);
             if matching_files.size_hint().1 > Some(1) { exit!(1, "Got more than one matching file stored with the same UUID!"); }
 
             for file in matching_files {
@@ -234,10 +249,8 @@ fn main() {
     Logger::init();
     info!("DDP node v{}-{}", VERSION, GIT_HASH);
 
-    info!("Block size: {}", calculate_block_size(350000000));
-
     let handle = announce();
     std::thread::sleep(std::time::Duration::from_millis(200));
-    request("firefox.pkg".to_string());
+    request("some random file contents\n".to_string());
     handle.join().unwrap();
 }
