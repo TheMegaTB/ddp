@@ -1,4 +1,4 @@
-use std::net::{ UdpSocket, IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4 };
+use std::net::{ UdpSocket, Ipv4Addr, SocketAddr, SocketAddrV4 };
 use std::str::FromStr;
 use std::error::Error;
 
@@ -100,5 +100,15 @@ impl UDPSocketHandle {
         buf.truncate(len);
         trace!("UDP RECV {:?} <- {:?}", buf, src);
         (buf, src)
+    }
+
+    pub fn try_clone(&self) -> Result<UDPSocketHandle, ()> {
+        match self.socket.try_clone() {
+            Ok(sock) => Ok(UDPSocketHandle {
+                socket: sock,
+                multicast_addr: self.multicast_addr
+            }),
+            Err(_) => Err(())
+        }
     }
 }

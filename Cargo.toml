@@ -9,3 +9,7 @@ net2 = "0.2.23"  # Multicast support for UDP communication
 log = "0.3.6"  # Base for custom logger
 ansi_term = "0.7.2"  # Dependency for logger
 sha2 = "0.1.2"
+serde = "0.7.14"
+serde_macros = "0.7.14"
+bincode = "0.5.9"
+time = "0.1.35"
