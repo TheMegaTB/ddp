@@ -301,13 +301,13 @@ fn ping(mut target: SocketAddr) -> Option<Duration> {
 }
 
 fn read_file() {
-    const STEP: usize = 10000000;
+    const STEP: usize = 1000000;
 
     let f = std::fs::File::open("./test").unwrap();
     let size = f.metadata().unwrap().len();
     let block_size = calculate_block_size(size as usize);
     let mut pb = ProgressBar::new(size); pb.set_units(Units::Bytes);
-    let reader = std::io::BufReader::with_capacity(STEP, f);
+    let reader = std::io::BufReader::with_capacity(block_size, f);
 
     println!("File size: {}, Block size: {}", size, block_size);
 
@@ -326,10 +326,11 @@ fn read_file() {
             Err(e) => { exit!(1, "Error occurred whilst reading file ({:?})", e); }
         }
     }
+    pb.add(STEP as u64);
+    hash.input(&buf);
     let mut buf = vec![0; hash.output_bytes()];
     hash.result(&mut buf);
 
-    // f.read_to_end(&mut data).unwrap();
     println!("{:?}", to_hex_string(&buf));
 }
 
