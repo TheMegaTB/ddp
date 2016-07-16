@@ -72,16 +72,40 @@ struct FileMetadata {
     hash: Vec<u8>,
     /// Total size of the file in bytes
     size: usize
+    // TODO: Hash every block and validate them when downloading
 }
 
 struct File {
     metadata: FileMetadata,
-    /// Block ID, hash and people downloading it currently
-    blocks: Vec<(usize, Vec<u8>, usize)>
+    /// Block ID and people downloading it currently
+    blocks: Vec<(usize, usize)>
+}
+
+fn convert_block_sources(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) -> Vec<Vec<IpAddr>> {
+    let block_count = filesize / calculate_block_size(filesize);
+    // Restructure block_sources to be a vector of blocks
+    // Each block is a vector of sources where a source is a touple of the 'rank' transmitted by that source and the IP of it
+    let mut block_sources: Vec<Vec<_>> = (0..block_count).map(|_| Vec::new()).collect();
+    for (source, blocks) in sources.iter() {
+        for (rank, block) in blocks.iter().enumerate() {
+            block_sources[*block].push((rank, source));
+        }
+    }
+    // Sort the block sources by rank and strip it afterwards
+    for block in block_sources.iter_mut() { block.sort_by(|a, b| a.0.cmp(&b.0)) };
+    block_sources.into_iter().map(|block| {
+        block.into_iter().map(|source| source.1.clone()).collect()
+    }).collect()
+}
+
+fn sort_by_block_availability(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) -> Vec<usize> {
+    let block_availability = convert_block_sources(filesize, sources).into_iter().map(|block| block.len()).collect();
+    println!("{:?}", block_availability);
+    block_availability
 }
 
 fn request(filename: String) {
-    info!("Requesting {} {}", filename, to_hex_string(&generate_uuid(&filename)));
+    info!("Requesting {}", to_hex_string(&generate_uuid(&filename)));
 
     let sock = UDPSocket::new().create_handle();
     let sock_addr = sock.socket.local_addr().unwrap();
@@ -118,10 +142,10 @@ fn request(filename: String) {
     sock.send_to_multicast(&uuid); // Send request
 
     let start = PreciseTime::now();
-    let mut block_availability: HashMap<IpAddr, Vec<(usize, Vec<u8>)>> = HashMap::new();
+    let mut block_sources: HashMap<IpAddr, Vec<usize>> = HashMap::new();
     let mut metadata = None;
     let mut received_metadata = false;
-    while start.to(PreciseTime::now()) < Duration::seconds(5) {
+    while start.to(PreciseTime::now()) < Duration::seconds(1) {
         if !received_metadata {
             match tcp_rx.try_recv() {
                 Ok(m) => {
@@ -133,20 +157,26 @@ fn request(filename: String) {
         }
         match udp_rx.try_recv() {
             Ok(d) => {
-                let mut data = deserialize(&d.0).unwrap();
+                let mut data: Vec<usize> = deserialize(&d.0).unwrap();
                 let ip = d.1.ip();
-                if match block_availability.get_mut(&ip) {
+                if match block_sources.get_mut(&ip) {
                     Some(v) => { v.append(&mut data); false},
                     None => true
                 } {
-                    block_availability.insert(ip, data);
+                    block_sources.insert(ip, data);
                 }
             },
             Err(_) => {}
         }
     }
-    println!("{:?}", metadata);
-    println!("{:?}", block_availability);
+
+    match metadata {
+        Some(metadata) => {
+            sort_by_block_availability(metadata.size, block_sources);
+        },
+        None => {}
+    }
+
 }
 
 use std::thread::{spawn,JoinHandle};
@@ -160,7 +190,7 @@ fn announce() -> JoinHandle<()> {
             hash: vec![0; 64],
             size: 55899986
         },
-        blocks: vec![(0, Vec::new(), 1), (1, Vec::new(), 0), (2, Vec::new(), 0)]
+        blocks: vec![(0, 2), (1, 1), (2, 0), (3, 0)]
     });
 
     spawn(move || {
@@ -177,9 +207,9 @@ fn announce() -> JoinHandle<()> {
 
             for file in matching_files {
                 // Sort by connected clients
-                file.blocks.sort_by(|a, b| a.2.cmp(&b.2));
+                file.blocks.sort_by(|a, b| a.1.cmp(&b.1));
                 // Remove the client list and serialize
-                let block_list = file.blocks.iter().map(|i| (i.0, i.1.clone())).collect::<Vec<_>>();
+                let block_list = file.blocks.iter().map(|i| i.0).collect::<Vec<_>>();
                 let block_list = serialize(&block_list, SizeLimit::Infinite).unwrap();
 
                 // Send the block list
