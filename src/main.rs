@@ -118,7 +118,7 @@ fn request(filename: String) {
     sock.send_to_multicast(&uuid); // Send request
 
     let start = PreciseTime::now();
-    let mut block_availability: HashMap<IpAddr, Vec<u8>> = HashMap::new();
+    let mut block_availability: HashMap<IpAddr, Vec<(usize, Vec<u8>)>> = HashMap::new();
     let mut metadata = None;
     let mut received_metadata = false;
     while start.to(PreciseTime::now()) < Duration::seconds(5) {
@@ -132,12 +132,14 @@ fn request(filename: String) {
             }
         }
         match udp_rx.try_recv() {
-            Ok(mut d) => {
-                if match block_availability.get_mut(&d.1.ip()) {
-                    Some(v) => { v.append(&mut d.0); false},
+            Ok(d) => {
+                let mut data = deserialize(&d.0).unwrap();
+                let ip = d.1.ip();
+                if match block_availability.get_mut(&ip) {
+                    Some(v) => { v.append(&mut data); false},
                     None => true
                 } {
-                    block_availability.insert(d.1.ip(), d.0);
+                    block_availability.insert(ip, data);
                 }
             },
             Err(_) => {}
@@ -158,7 +160,7 @@ fn announce() -> JoinHandle<()> {
             hash: vec![0; 64],
             size: 55899986
         },
-        blocks: Vec::new()
+        blocks: vec![(0, Vec::new(), 1), (1, Vec::new(), 0), (2, Vec::new(), 0)]
     });
 
     spawn(move || {
@@ -170,12 +172,19 @@ fn announce() -> JoinHandle<()> {
 
             debug!("Received request for file {:?}", to_hex_string(&data));
 
-            let matching_files = files.iter().filter(|f| f.metadata.id == data);
+            let matching_files = files.iter_mut().filter(|f| f.metadata.id == data);
             if matching_files.size_hint().1 > Some(1) { exit!(1, "Got more than one matching file stored with the same UUID!"); }
 
             for file in matching_files {
-                UDPSocket::new().create_handle().send(&[1, 2, 3], src);
-                UDPSocket::new().create_handle().send(&[4, 5, 6], src);
+                // Sort by connected clients
+                file.blocks.sort_by(|a, b| a.2.cmp(&b.2));
+                // Remove the client list and serialize
+                let block_list = file.blocks.iter().map(|i| (i.0, i.1.clone())).collect::<Vec<_>>();
+                let block_list = serialize(&block_list, SizeLimit::Infinite).unwrap();
+
+                // Send the block list
+                UDPSocket::new().create_handle().send(&block_list, src);
+
                 if file_details_requested == Some(1) {
                     // Attempt to send metadata and fail silently (fail = somebody else sent it earlier)
                     match TcpStream::connect(src) {
