@@ -16,7 +16,7 @@ use bincode::serde::*;
 use bincode::SizeLimit;
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream, IpAddr};
+use std::net::{TcpListener, TcpStream, IpAddr, SocketAddr};
 use std::collections::HashMap;
 
 mod logger;
@@ -245,9 +245,46 @@ fn announce() -> JoinHandle<()> {
     })
 }
 
+fn ping_server() {
+    let tcp_sock = TcpListener::bind("0.0.0.0:9999").unwrap();
+    for stream in tcp_sock.incoming() {
+        let mut stream = stream.unwrap();
+        let mut buf = Vec::new();
+        stream.read(&mut [0]).unwrap();
+        stream.write_all(&mut buf).unwrap();
+    }
+}
+
+fn ping(target: SocketAddr) -> Option<Duration> {
+    match TcpStream::connect(target) {
+        Ok(mut stream) => {
+            stream.set_read_timeout(Some(std::time::Duration::from_millis(5000))).unwrap();
+            let start = PreciseTime::now();
+            match stream.write(&[1]) {
+                Ok(_) => {
+                    match stream.read(&mut [0]) {
+                        Ok(_) => Some(start.to(PreciseTime::now())),
+                        Err(_) => None
+                    }
+                },
+                Err(_) => None
+            }
+        },
+        Err(_) => None
+    }
+}
+
 fn main() {
     Logger::init();
     info!("DDP node v{}-{}", VERSION, GIT_HASH);
+
+    {
+        spawn(|| { ping_server() });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        use std::net::{SocketAddrV4, Ipv4Addr};
+        let ping_res = ping(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9999)));
+        println!("Ping: {}ms", ping_res.unwrap().num_milliseconds());
+    }
 
     let handle = announce();
     std::thread::sleep(std::time::Duration::from_millis(200));
