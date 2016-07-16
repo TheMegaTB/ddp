@@ -2,5 +2,10 @@
 name = "ddp"
 version = "0.1.0"
 authors = ["Til Blechschmidt <til@blechschmidt.de>"]
+build = "build.rs"
 
 [dependencies]
+net2 = "0.2.23"  # Multicast support for UDP communication
+log = "0.3.6"  # Base for custom logger
+ansi_term = "0.7.2"  # Dependency for logger
+sha2 = "0.1.2"
