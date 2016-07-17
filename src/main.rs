@@ -7,11 +7,15 @@ extern crate ansi_term;
 extern crate bincode;
 extern crate sha2;
 extern crate time;
+extern crate pbr;
+
+use pbr::{ProgressBar, Units};
 
 use time::{Duration, PreciseTime};
 
 use sha2::sha2::Sha256;
 use sha2::Digest;
+
 use bincode::serde::*;
 use bincode::SizeLimit;
 
@@ -90,7 +94,15 @@ fn convert_block_sources(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) 
         }
     }
     // Sort the block sources by rank and strip it afterwards
-    for block in block_sources.iter_mut() { block.sort_by(|a, b| a.0.cmp(&b.0)) };
+    for block in block_sources.iter_mut() { block.sort_by(|a, b| {
+        let comparison = a.0.cmp(&b.0);
+        if comparison == Ordering::Equal {
+            // In case a == b we compare their ping and use the better one
+            let a_ping = ping(SocketAddr::new(*a.1, 9999));
+            let b_ping = ping(SocketAddr::new(*b.1, 9999));
+            a_ping.cmp(&b_ping)
+        } else { comparison }
+    })};
     block_sources.into_iter().map(|block| {
         block.into_iter().map(|source| source.1.clone()).collect()
     }).collect()
@@ -115,8 +127,10 @@ fn sort_by_block_availability(sources: Vec<Vec<IpAddr>>) -> Vec<usize> {
     block_availability
 }
 
-fn request(hash: String) {
-    info!("Requesting {}", to_hex_string(&generate_uuid(&hash)));
+fn request(uuid: &Vec<u8>) {
+    let mut uuid = uuid.clone();
+
+    info!("Requesting {}", to_hex_string(&uuid));
 
     let sock = UDPSocket::new().create_handle();
     let sock_addr = sock.socket.local_addr().unwrap();
@@ -124,18 +138,23 @@ fn request(hash: String) {
     let (udp_tx, udp_rx) = std::sync::mpsc::channel();
 
     // TCP receive thread
+    let hash_copy = uuid.clone();
+    let tcp_ready = std::sync::Arc::new(std::sync::Mutex::new(false));
+    let tcp_ready_thread = tcp_ready.clone();
     spawn(move || {
         let tcp_sock = TcpListener::bind(sock_addr).unwrap();
+        *tcp_ready_thread.lock().unwrap() = true;
         let mut stream = match tcp_sock.incoming().next() {
             Some(sock) => sock.unwrap(),
             None => {
                 tcp_tx.send(None).unwrap();
-                return;
+                return
             }
         };
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).unwrap();
         let metadata: FileMetadata = deserialize(&buf).unwrap();
+        if metadata.hash != hash_copy { exit!(2, "Hash mismatch! (remote vs local)"); }
         tcp_tx.send(Some(metadata)).unwrap();
     });
 
@@ -147,9 +166,11 @@ fn request(hash: String) {
         }
     });
 
-    let mut uuid = generate_uuid(&hash);
     uuid.push(1); // Request file details in addition to block lists
-    std::thread::sleep(std::time::Duration::from_millis(500)); //TODO: Replace this with waiting for the TCP socket
+    loop {
+        if *tcp_ready.lock().unwrap() == true { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     sock.send_to_multicast(&uuid); // Send request
 
     let start = PreciseTime::now();
@@ -187,7 +208,9 @@ fn request(hash: String) {
             let blocks = convert_block_sources(metadata.size, block_sources);
             for block in sort_by_block_availability(blocks.clone()).iter() {
                 let ref current_sources = blocks[*block];
-                println!("Currently loading block {} from sources {:?}", block, current_sources);
+                if current_sources.len() > 0 {
+                    println!("Currently loading block {} from sources {:?}", block, current_sources);
+                }
             }
         },
         None => {}
@@ -245,17 +268,20 @@ fn announce() -> JoinHandle<()> {
     })
 }
 
-fn ping_server() {
-    let tcp_sock = TcpListener::bind("0.0.0.0:9999").unwrap();
-    for stream in tcp_sock.incoming() {
-        let mut stream = stream.unwrap();
-        let mut buf = Vec::new();
-        stream.read(&mut [0]).unwrap();
-        stream.write_all(&mut buf).unwrap();
-    }
+fn ping_server() -> JoinHandle<()> {
+    spawn(|| {
+        let tcp_sock = TcpListener::bind("0.0.0.0:9999").unwrap();
+        for stream in tcp_sock.incoming() {
+            let mut stream = stream.unwrap();
+            let mut buf = Vec::new();
+            stream.read(&mut [0]).unwrap();
+            stream.write_all(&mut buf).unwrap();
+        }
+    })
 }
 
-fn ping(target: SocketAddr) -> Option<Duration> {
+fn ping(mut target: SocketAddr) -> Option<Duration> {
+    target.set_port(9999);
     match TcpStream::connect(target) {
         Ok(mut stream) => {
             stream.set_read_timeout(Some(std::time::Duration::from_millis(5000))).unwrap();
@@ -274,20 +300,52 @@ fn ping(target: SocketAddr) -> Option<Duration> {
     }
 }
 
+fn read_file() {
+    const STEP: usize = 10000000;
+
+    let f = std::fs::File::open("./test").unwrap();
+    let size = f.metadata().unwrap().len();
+    let block_size = calculate_block_size(size as usize);
+    let mut pb = ProgressBar::new(size); pb.set_units(Units::Bytes);
+    let reader = std::io::BufReader::with_capacity(STEP, f);
+
+    println!("File size: {}, Block size: {}", size, block_size);
+
+    let mut hash = Sha256::new();
+    let mut buf = Vec::new();
+    for (id, byte) in reader.bytes().enumerate() {
+        match byte {
+            Ok(byte) => {
+                if id % STEP == 0 {
+                    pb.add(STEP as u64);
+                    hash.input(&buf);
+                    buf.clear();
+                }
+                buf.push(byte);
+            },
+            Err(e) => { exit!(1, "Error occurred whilst reading file ({:?})", e); }
+        }
+    }
+    let mut buf = vec![0; hash.output_bytes()];
+    hash.result(&mut buf);
+
+    // f.read_to_end(&mut data).unwrap();
+    println!("{:?}", to_hex_string(&buf));
+}
+
 fn main() {
     Logger::init();
     info!("DDP node v{}-{}", VERSION, GIT_HASH);
 
-    {
-        spawn(|| { ping_server() });
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        use std::net::{SocketAddrV4, Ipv4Addr};
-        let ping_res = ping(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9999)));
-        println!("Ping: {}ms", ping_res.unwrap().num_milliseconds());
-    }
+    read_file();
+    exit!(3);
 
+    ping_server();
     let handle = announce();
+
+    // Request some random file
     std::thread::sleep(std::time::Duration::from_millis(200));
-    request("some random file contents\n".to_string());
+    request(&generate_uuid(&"some random file contents\n".to_string()));
+
     handle.join().unwrap();
 }
