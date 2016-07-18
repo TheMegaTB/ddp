@@ -31,7 +31,7 @@ mod announce;
 use announce::announce;
 
 mod request;
-use request::request;
+use request::*;
 
 /// Constant containing version string provided by cargo
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -57,7 +57,16 @@ fn main() {
     {
         let uuid = files.lock().unwrap()[0].metadata.hash.0.clone();
         std::thread::sleep(std::time::Duration::from_millis(200));
-        request(&uuid);
+        let meta = request_metadata(&uuid).unwrap();
+        let sources = request_sources(&uuid, meta.size);
+        println!("{:?}", sources);
+        for block in request::sort_by_block_availability(sources.clone()).iter() {
+            let ref current_sources = sources[*block];
+            if current_sources.len() > 0 {
+                println!("Currently loading block {} from sources {:?}", block, current_sources);
+            }
+        }
+
     }
 
     handle.join().unwrap();

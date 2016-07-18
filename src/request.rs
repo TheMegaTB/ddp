@@ -16,7 +16,7 @@ use helpers::to_hex_string;
 use networking::UDPSocket;
 use networking::ping;
 
-use file::FileMetadata;
+use file::{File, FileMetadata};
 
 
 fn convert_block_sources(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) -> Vec<Vec<IpAddr>> {
@@ -44,7 +44,7 @@ fn convert_block_sources(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) 
     }).collect()
 }
 
-fn sort_by_block_availability(sources: Vec<Vec<IpAddr>>) -> Vec<usize> {
+pub fn sort_by_block_availability(sources: Vec<Vec<IpAddr>>) -> Vec<usize> {
     let mut block_availability: Vec<_> = sources.into_iter().enumerate().map(|(id, block)| (id, block.len())).collect();
     // Put the available ones at the top and sort them by their availability (lowest first to speed up distribution)
     block_availability.sort_by(|a, b|
@@ -62,7 +62,42 @@ fn sort_by_block_availability(sources: Vec<Vec<IpAddr>>) -> Vec<usize> {
     block_availability
 }
 
-pub fn request(uuid: &Vec<u8>) {
+pub fn request_sources(uuid: &Vec<u8>, size: usize) -> Vec<Vec<IpAddr>> {
+    let mut uuid = uuid.clone();
+    uuid.push(0);
+
+    let (udp_tx, udp_rx) = mpsc::channel();
+    let sock = UDPSocket::new().create_handle();
+    spawn(move || {
+        loop {
+            // TODO: Set datagram size dynamically
+            udp_tx.send(sock.receive()).unwrap();
+        }
+    });
+
+    let start = PreciseTime::now();
+    let mut block_sources: HashMap<IpAddr, Vec<usize>> = HashMap::new();
+    while start.to(PreciseTime::now()) < ext_Duration::seconds(1) {
+        match udp_rx.try_recv() {
+            Ok(d) => {
+                println!("Received something");
+                let mut data: Vec<usize> = deserialize(&d.0).unwrap();
+                let ip = d.1.ip();
+                if match block_sources.get_mut(&ip) {
+                    Some(v) => { v.append(&mut data); false},
+                    None => true
+                } {
+                    block_sources.insert(ip, data);
+                }
+            },
+            Err(_) => {}
+        }
+    }
+
+    convert_block_sources(size, block_sources)
+}
+
+pub fn request_metadata(uuid: &Vec<u8>) -> Option<FileMetadata> {
     let mut uuid = uuid.clone();
 
     info!("Requesting {}", to_hex_string(&uuid));
@@ -70,7 +105,6 @@ pub fn request(uuid: &Vec<u8>) {
     let sock = UDPSocket::new().create_handle();
     let sock_addr = sock.socket.local_addr().unwrap();
     let (tcp_tx, tcp_rx) = mpsc::channel();
-    let (udp_tx, udp_rx) = mpsc::channel();
 
     // TCP receive thread
     let hash_copy = uuid.clone();
@@ -94,13 +128,13 @@ pub fn request(uuid: &Vec<u8>) {
     });
 
     // UDP receive thread
-    let thread_sock = sock.try_clone().unwrap();
-    spawn(move || {
-        loop {
-            // TODO: Set datagram size dynamically
-            udp_tx.send(thread_sock.receive()).unwrap();
-        }
-    });
+    // let thread_sock = sock.try_clone().unwrap();
+    // spawn(move || {
+    //     loop {
+    //         // TODO: Set datagram size dynamically
+    //         udp_tx.send(thread_sock.receive()).unwrap();
+    //     }
+    // });
 
     uuid.push(1); // Request file details in addition to block lists
     loop {
@@ -123,35 +157,38 @@ pub fn request(uuid: &Vec<u8>) {
                 Err(_) => {}
             }
         }
-        match udp_rx.try_recv() {
-            Ok(d) => {
-                let mut data: Vec<usize> = deserialize(&d.0).unwrap();
-                let ip = d.1.ip();
-                if match block_sources.get_mut(&ip) {
-                    Some(v) => { v.append(&mut data); false},
-                    None => true
-                } {
-                    block_sources.insert(ip, data);
-                }
-            },
-            Err(_) => {}
-        }
+        // match udp_rx.try_recv() {
+        //     Ok(d) => {
+        //         let mut data: Vec<usize> = deserialize(&d.0).unwrap();
+        //         let ip = d.1.ip();
+        //         if match block_sources.get_mut(&ip) {
+        //             Some(v) => { v.append(&mut data); false},
+        //             None => true
+        //         } {
+        //             block_sources.insert(ip, data);
+        //         }
+        //     },
+        //     Err(_) => {}
+        // }
     }
 
-    match metadata {
-        Some(metadata) => {
-            //TODO: Compare hash in metadata w/ local UUID
-            let blocks = convert_block_sources(metadata.size, block_sources);
-            for block in sort_by_block_availability(blocks.clone()).iter() {
-                let ref current_sources = blocks[*block];
-                if current_sources.len() > 0 {
-                    println!("Currently loading block {} from sources {:?}", block, current_sources);
-                }
-            }
-        },
-        None => {
-            exit!(1, "File is not available (no_peers)");
-        }
-    }
+    metadata
+
+    // match metadata {
+    //     Some(metadata) => {
+    //         metadata
+    //         //TODO: Compare hash in metadata w/ local UUID
+    //         // let blocks = convert_block_sources(metadata.size, block_sources);
+    //         // for block in sort_by_block_availability(blocks.clone()).iter() {
+    //         //     let ref current_sources = blocks[*block];
+    //         //     if current_sources.len() > 0 {
+    //         //         println!("Currently loading block {} from sources {:?}", block, current_sources);
+    //         //     }
+    //         // }
+    //     },
+    //     None => {
+    //         exit!(1, "File is not available (no_peers)");
+    //     }
+    // }
 
 }
