@@ -19,6 +19,7 @@ use sha2::Digest;
 use bincode::serde::*;
 use bincode::SizeLimit;
 
+use std::path::PathBuf;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, IpAddr, SocketAddr};
 use std::collections::HashMap;
@@ -56,16 +57,17 @@ fn generate_uuid(input: &String) -> Vec<u8> {
 }
 
 fn calculate_block_size(total_size: usize) -> usize {
-    let base: usize = 2;
-    let mut power = 4;
+    // let base: usize = 2;
+    // let mut power = 4;
     let mut block_size = 2;
 
     while block_size < 1000000 && total_size / block_size > 1000 {
-        power += 4;
-        block_size = base * power;
+        block_size += 1;
+        // power += 1;
+        // block_size = base * power;
     }
 
-    block_size
+    block_size - 1
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -300,10 +302,19 @@ fn ping(mut target: SocketAddr) -> Option<Duration> {
     }
 }
 
-fn read_file() {
-    const STEP: usize = 1000000;
+use std::io::{Seek, SeekFrom};
+fn get_block(path: PathBuf, block_id: usize) -> Vec<u8> {
+    let f = std::fs::File::open(path.clone()).unwrap();
+    let block_size = calculate_block_size(f.metadata().unwrap().len() as usize);
+    let mut reader = std::io::BufReader::with_capacity(block_size, f);
+    reader.seek(SeekFrom::Start((block_size * block_id) as u64)).unwrap();
+    let mut buf = vec![0; block_size];
+    reader.read_exact(&mut buf).unwrap();
+    buf
+}
 
-    let f = std::fs::File::open("./test").unwrap();
+fn prepare_file(path: PathBuf) {
+    let f = std::fs::File::open(path.clone()).unwrap();
     let size = f.metadata().unwrap().len();
     let block_size = calculate_block_size(size as usize);
     let mut pb = ProgressBar::new(size); pb.set_units(Units::Bytes);
@@ -311,23 +322,36 @@ fn read_file() {
 
     println!("File size: {}, Block size: {}", size, block_size);
 
+    let mut block_hashes = Vec::new();
+
     let mut hash = Sha256::new();
-    let mut buf = Vec::new();
+    let mut block_hash = Sha256::new();
+    let mut block = Vec::new();
     for (id, byte) in reader.bytes().enumerate() {
         match byte {
             Ok(byte) => {
-                if id % STEP == 0 {
-                    pb.add(STEP as u64);
-                    hash.input(&buf);
-                    buf.clear();
+                if id % block_size == 0 && block.len() > 0 {
+                    pb.add(block_size as u64);
+
+                    // Create block hash
+                    block_hash.input(&block);
+                    let mut buf = vec![0; block_hash.output_bytes()];
+                    block_hash.result(&mut buf);
+                    block_hashes.push(buf.clone());
+                    block_hash.reset();
+
+                    // Add to main hash and clear block
+                    hash.input(&block);
+                    block.clear();
                 }
-                buf.push(byte);
+                block.push(byte);
             },
             Err(e) => { exit!(1, "Error occurred whilst reading file ({:?})", e); }
         }
     }
-    pb.add(STEP as u64);
-    hash.input(&buf);
+    println!("TODO: Remaining bytes: {}", block.len());
+    pb.add(block_size as u64);
+    hash.input(&block);
     let mut buf = vec![0; hash.output_bytes()];
     hash.result(&mut buf);
 
@@ -338,8 +362,8 @@ fn main() {
     Logger::init();
     info!("DDP node v{}-{}", VERSION, GIT_HASH);
 
-    read_file();
-    exit!(3);
+    prepare_file(PathBuf::from("./test"));
+    get_block(PathBuf::from("./test"), 10);
 
     ping_server();
     let handle = announce();

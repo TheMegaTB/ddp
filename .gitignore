@@ -8,3 +8,4 @@ Cargo.lock
 
 # Exclude the git hash
 /src/git_hash.rs
+.gpns.tmp
