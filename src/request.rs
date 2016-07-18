@@ -64,10 +64,11 @@ pub fn sort_by_block_availability(sources: Vec<Vec<IpAddr>>) -> Vec<usize> {
 
 pub fn request_sources(uuid: &Vec<u8>, size: usize) -> Vec<Vec<IpAddr>> {
     let mut uuid = uuid.clone();
-    uuid.push(0);
+    uuid.push(0); // Do not request file details but only the available blocks
 
     let (udp_tx, udp_rx) = mpsc::channel();
     let sock = UDPSocket::new().create_handle();
+    sock.send_to_multicast(&uuid);
     spawn(move || {
         loop {
             // TODO: Set datagram size dynamically
@@ -80,7 +81,6 @@ pub fn request_sources(uuid: &Vec<u8>, size: usize) -> Vec<Vec<IpAddr>> {
     while start.to(PreciseTime::now()) < ext_Duration::seconds(1) {
         match udp_rx.try_recv() {
             Ok(d) => {
-                println!("Received something");
                 let mut data: Vec<usize> = deserialize(&d.0).unwrap();
                 let ip = d.1.ip();
                 if match block_sources.get_mut(&ip) {
@@ -127,15 +127,6 @@ pub fn request_metadata(uuid: &Vec<u8>) -> Option<FileMetadata> {
         tcp_tx.send(Some(metadata)).unwrap();
     });
 
-    // UDP receive thread
-    // let thread_sock = sock.try_clone().unwrap();
-    // spawn(move || {
-    //     loop {
-    //         // TODO: Set datagram size dynamically
-    //         udp_tx.send(thread_sock.receive()).unwrap();
-    //     }
-    // });
-
     uuid.push(1); // Request file details in addition to block lists
     loop {
         if *tcp_ready.lock().unwrap() == true { break; }
@@ -144,7 +135,6 @@ pub fn request_metadata(uuid: &Vec<u8>) -> Option<FileMetadata> {
     sock.send_to_multicast(&uuid); // Send request
 
     let start = PreciseTime::now();
-    let mut block_sources: HashMap<IpAddr, Vec<usize>> = HashMap::new();
     let mut metadata = None;
     let mut received_metadata = false;
     while start.to(PreciseTime::now()) < ext_Duration::seconds(1) {
@@ -157,38 +147,7 @@ pub fn request_metadata(uuid: &Vec<u8>) -> Option<FileMetadata> {
                 Err(_) => {}
             }
         }
-        // match udp_rx.try_recv() {
-        //     Ok(d) => {
-        //         let mut data: Vec<usize> = deserialize(&d.0).unwrap();
-        //         let ip = d.1.ip();
-        //         if match block_sources.get_mut(&ip) {
-        //             Some(v) => { v.append(&mut data); false},
-        //             None => true
-        //         } {
-        //             block_sources.insert(ip, data);
-        //         }
-        //     },
-        //     Err(_) => {}
-        // }
     }
 
     metadata
-
-    // match metadata {
-    //     Some(metadata) => {
-    //         metadata
-    //         //TODO: Compare hash in metadata w/ local UUID
-    //         // let blocks = convert_block_sources(metadata.size, block_sources);
-    //         // for block in sort_by_block_availability(blocks.clone()).iter() {
-    //         //     let ref current_sources = blocks[*block];
-    //         //     if current_sources.len() > 0 {
-    //         //         println!("Currently loading block {} from sources {:?}", block, current_sources);
-    //         //     }
-    //         // }
-    //     },
-    //     None => {
-    //         exit!(1, "File is not available (no_peers)");
-    //     }
-    // }
-
 }
