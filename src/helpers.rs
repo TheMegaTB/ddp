@@ -1,3 +1,30 @@
+use sha2::sha2::Sha256;
+use sha2::Digest;
+
+pub fn to_hex_string(bytes: &Vec<u8>) -> String {
+    bytes.chunks(8).map(|c| {
+        c.iter().map(|b| format!("{:02X}", b)).collect::<Vec<String>>().join("")
+    }).collect::<Vec<String>>().join("-")
+}
+
+pub fn generate_uuid(input: &String) -> Vec<u8> {
+    let mut hash = Sha256::new();
+    hash.input_str(&input);
+    let mut buf = vec![0; hash.output_bytes()];
+    hash.result(&mut buf);
+    buf
+}
+
+pub fn calculate_block_size(total_size: usize) -> usize {
+    let mut block_size = 2;
+
+    while block_size < 1000000 && total_size / block_size > 1000 {
+        block_size += 1;
+    }
+
+    block_size - 1
+}
+
 /// Panic with a given error code and print an optional message
 /// # Examples
 ///

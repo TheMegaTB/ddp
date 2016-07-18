@@ -1,9 +1,46 @@
-use std::net::{ UdpSocket, Ipv4Addr, SocketAddr, SocketAddrV4 };
+use std::net::{ UdpSocket, Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream };
 use std::str::FromStr;
 use std::error::Error;
+use std::thread::{spawn, JoinHandle};
+use std::io::{Read, Write};
+use std::time::Duration;
+
+use ext_time::{Duration as ext_Duration, PreciseTime};
 
 const ANNOUNCE_MULTICAST: &'static str = "224.0.1.0";
 const BASE_PORT: u16 = 8888;
+
+pub fn start_ping_server() -> JoinHandle<()> {
+    spawn(|| {
+        let tcp_sock = TcpListener::bind("0.0.0.0:9999").unwrap();
+        for stream in tcp_sock.incoming() {
+            let mut stream = stream.unwrap();
+            let mut buf = Vec::new();
+            stream.read(&mut [0]).unwrap();
+            stream.write_all(&mut buf).unwrap();
+        }
+    })
+}
+
+pub fn ping(mut target: SocketAddr) -> Option<ext_Duration> {
+    target.set_port(9999);
+    match TcpStream::connect(target) {
+        Ok(mut stream) => {
+            stream.set_read_timeout(Some(Duration::from_millis(5000))).unwrap();
+            let start = PreciseTime::now();
+            match stream.write(&[1]) {
+                Ok(_) => {
+                    match stream.read(&mut [0]) {
+                        Ok(_) => Some(start.to(PreciseTime::now())),
+                        Err(_) => None
+                    }
+                },
+                Err(_) => None
+            }
+        },
+        Err(_) => None
+    }
+}
 
 /// Builder struct for `UDPSocketHandle`
 #[derive(Debug)]
@@ -95,7 +132,7 @@ impl UDPSocketHandle {
 
     /// Receive a datagram from any sender
     pub fn receive(&self) -> (Vec<u8>, SocketAddr) {
-        let mut buf = vec![0; 2048];
+        let mut buf = vec![0; 1000000];//2048];
         let (len, src) = self.socket.recv_from(&mut buf).ok().expect("Failed to receive package.");
         buf.truncate(len);
         trace!("UDP RECV {:?} <- {:?}", buf, src);
