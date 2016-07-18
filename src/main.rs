@@ -51,7 +51,7 @@ fn main() {
         );
     }
 
-    let handle = announce(files.clone());
+    announce(files.clone());
 
     // Request some random file
     {
@@ -59,15 +59,11 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_millis(200));
         let meta = request_metadata(&uuid).unwrap();
         let sources = request_sources(&uuid, meta.size);
-        println!("{:?}", sources);
-        for block in request::sort_by_block_availability(sources.clone()).iter() {
-            let ref current_sources = sources[*block];
-            if current_sources.len() > 0 {
-                println!("Currently loading block {} from sources {:?}", block, current_sources);
-            }
-        }
-
+        let mut file = File {
+            metadata: meta,
+            blocks: Vec::new(),
+            local_path: PathBuf::from("./download")
+        };
+        file.download(sources);
     }
-
-    handle.join().unwrap();
 }

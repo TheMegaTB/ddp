@@ -8,11 +8,11 @@ use std::time::Duration;
 use ext_time::{Duration as ext_Duration, PreciseTime};
 
 const ANNOUNCE_MULTICAST: &'static str = "224.0.1.0";
-const BASE_PORT: u16 = 8888;
+pub const BASE_PORT: u16 = 8888;
 
 pub fn start_ping_server() -> JoinHandle<()> {
     spawn(|| {
-        let tcp_sock = TcpListener::bind("0.0.0.0:9999").unwrap();
+        let tcp_sock = TcpListener::bind(("0.0.0.0", BASE_PORT + 1)).unwrap();
         for stream in tcp_sock.incoming() {
             let mut stream = stream.unwrap();
             let mut buf = Vec::new();
@@ -23,7 +23,7 @@ pub fn start_ping_server() -> JoinHandle<()> {
 }
 
 pub fn ping(mut target: SocketAddr) -> Option<ext_Duration> {
-    target.set_port(9999);
+    target.set_port(BASE_PORT + 1);
     match TcpStream::connect(target) {
         Ok(mut stream) => {
             stream.set_read_timeout(Some(Duration::from_millis(5000))).unwrap();

@@ -10,13 +10,11 @@ use ext_time::{Duration as ext_Duration, PreciseTime};
 
 use bincode::serde::*;
 
-use helpers::calculate_block_size;
-use helpers::to_hex_string;
+use helpers::{to_hex_string, calculate_block_size};
 
-use networking::UDPSocket;
-use networking::ping;
+use networking::{UDPSocket, ping, BASE_PORT};
 
-use file::{File, FileMetadata};
+use file::FileMetadata;
 
 
 fn convert_block_sources(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) -> Vec<Vec<IpAddr>> {
@@ -34,8 +32,8 @@ fn convert_block_sources(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) 
         let comparison = a.0.cmp(&b.0);
         if comparison == Ordering::Equal {
             // In case a == b we compare their ping and use the better one
-            let a_ping = ping(SocketAddr::new(*a.1, 9999));
-            let b_ping = ping(SocketAddr::new(*b.1, 9999));
+            let a_ping = ping(SocketAddr::new(*a.1, BASE_PORT + 1));
+            let b_ping = ping(SocketAddr::new(*b.1, BASE_PORT + 1));
             a_ping.cmp(&b_ping)
         } else { comparison }
     })};
@@ -100,7 +98,7 @@ pub fn request_sources(uuid: &Vec<u8>, size: usize) -> Vec<Vec<IpAddr>> {
 pub fn request_metadata(uuid: &Vec<u8>) -> Option<FileMetadata> {
     let mut uuid = uuid.clone();
 
-    info!("Requesting {}", to_hex_string(&uuid));
+    info!("Requesting metadata for {}", to_hex_string(&uuid));
 
     let sock = UDPSocket::new().create_handle();
     let sock_addr = sock.socket.local_addr().unwrap();
@@ -113,9 +111,9 @@ pub fn request_metadata(uuid: &Vec<u8>) -> Option<FileMetadata> {
     spawn(move || {
         let tcp_sock = TcpListener::bind(sock_addr).unwrap();
         *tcp_ready_thread.lock().unwrap() = true;
-        let mut stream = match tcp_sock.incoming().next() {
-            Some(sock) => sock.unwrap(),
-            None => {
+        let mut stream = match tcp_sock.accept() {
+            Ok((sock, _)) => sock,
+            Err(_) => {
                 tcp_tx.send(None).unwrap();
                 return
             }
