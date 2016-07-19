@@ -57,9 +57,7 @@ fn main() {
     {
         let uuid = files.lock().unwrap()[0].metadata.hash.0.clone();
         std::thread::sleep(std::time::Duration::from_millis(200));
-        // let meta = request_metadata(&uuid).unwrap();
-        // let sources = request_sources(&uuid, meta.size);
-        let mut file = File::from_metadata(&uuid, PathBuf::from("./download")).unwrap();
+        let mut file = File::from_metadata(&uuid, PathBuf::from("./download")).unwrap().to_handle();
         file.download();
     }
 }

@@ -6,9 +6,14 @@ use std::thread::{spawn, sleep};
 use std::time::Duration;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::fs::File as F;
+use std::io::{Seek, SeekFrom};
 
 use bincode::serde::*;
 use bincode::SizeLimit;
+
+use sha2::sha2::Sha256;
+use sha2::Digest;
 
 use ext_time::{Duration as ext_Duration, PreciseTime};
 
@@ -16,7 +21,7 @@ use helpers::{to_hex_string, calculate_block_size};
 
 use networking::{UDPSocket, ping, BASE_PORT};
 
-use file::{FileMetadata, File};
+use file::{FileMetadata, File, FileHandle};
 
 
 fn convert_block_sources(filesize: usize, sources: HashMap<IpAddr, Vec<usize>>) -> Vec<Vec<IpAddr>> {
@@ -63,69 +68,6 @@ pub fn sort_by_block_availability(sources: Vec<Vec<IpAddr>>) -> Vec<usize> {
 }
 
 impl File {
-
-    fn update_sources(&mut self) {
-        let mut uuid = self.metadata.hash.0.clone();
-        uuid.push(0); // Do not request file details but only the available blocks
-
-        let (udp_tx, udp_rx) = mpsc::channel();
-        let sock = UDPSocket::new().create_handle();
-        sock.send_to_multicast(&uuid);
-        spawn(move || {
-            loop {
-                // TODO: Set datagram size dynamically
-                udp_tx.send(sock.receive()).unwrap();
-            }
-        });
-
-        let start = PreciseTime::now();
-        let mut block_sources: HashMap<IpAddr, Vec<usize>> = HashMap::new();
-        while start.to(PreciseTime::now()) < ext_Duration::seconds(1) {
-            match udp_rx.try_recv() {
-                Ok(d) => {
-                    let mut data: Vec<usize> = deserialize(&d.0).unwrap();
-                    let ip = d.1.ip();
-                    if match block_sources.get_mut(&ip) {
-                        Some(v) => { v.append(&mut data); false},
-                        None => true
-                    } {
-                        block_sources.insert(ip, data);
-                    }
-                },
-                Err(_) => {}
-            }
-        }
-
-        self.sources = convert_block_sources(self.metadata.size, block_sources);
-    }
-
-    pub fn download(&mut self) {
-        self.update_sources();
-        for block in sort_by_block_availability(self.sources.clone()).iter() {
-            let ref current_sources = self.sources[*block];
-            if current_sources.len() > 0 {
-                println!("Currently loading block {} from sources {:?}", block, current_sources);
-                for source in current_sources {
-                    match TcpStream::connect((*source, BASE_PORT)) {
-                        Ok(mut stream) => {
-                            let payload = serialize(&(self.metadata.hash.0.clone(), block), SizeLimit::Infinite).unwrap();
-                            stream.write_all(&payload).unwrap();
-                            stream.shutdown(Shutdown::Write).unwrap();
-
-                            let mut block = Vec::with_capacity(calculate_block_size(self.metadata.size));
-                            stream.read_to_end(&mut block).unwrap();
-                            if block.len() > 0 {
-                                // TODO: Write block to file
-                                break;
-                            } else { warn!("Received invalid block data (zero_len)"); }
-                        },
-                        Err(_) => {}
-                    }
-                }
-            }
-        }
-    }
-
     pub fn from_metadata(uuid: &Vec<u8>, path: PathBuf) -> Option<File> {
         let mut uuid = uuid.clone();
 
@@ -178,7 +120,6 @@ impl File {
             } else {
                 return Some(File {
                     metadata: metadata.unwrap(),
-                    sources: Vec::new(),
                     blocks: Vec::new(),
                     local_path: path
                 })
@@ -186,5 +127,97 @@ impl File {
         }
 
         None
+    }
+}
+
+impl FileHandle {
+
+    fn update_sources(&mut self) {
+        let file_size = self.file.lock().unwrap().metadata.size;
+        let mut uuid = self.file.lock().unwrap().metadata.hash.0.clone();
+        uuid.push(0); // Do not request file details but only the available blocks
+
+        let (udp_tx, udp_rx) = mpsc::channel();
+        let sock = UDPSocket::new().create_handle();
+        sock.send_to_multicast(&uuid);
+        spawn(move || {
+            loop {
+                // TODO: Set datagram size dynamically
+                udp_tx.send(sock.receive()).unwrap();
+            }
+        });
+
+        let start = PreciseTime::now();
+        let mut block_sources: HashMap<IpAddr, Vec<usize>> = HashMap::new();
+        while start.to(PreciseTime::now()) < ext_Duration::seconds(1) {
+            match udp_rx.try_recv() {
+                Ok(d) => {
+                    let mut data: Vec<usize> = deserialize(&d.0).unwrap();
+                    let ip = d.1.ip();
+                    if match block_sources.get_mut(&ip) {
+                        Some(v) => { v.append(&mut data); false},
+                        None => true
+                    } {
+                        block_sources.insert(ip, data);
+                    }
+                },
+                Err(_) => {}
+            }
+        }
+
+        self.sources = convert_block_sources(file_size, block_sources);
+    }
+
+    fn allocate(&mut self) {
+        let file = self.file.lock().unwrap();
+        let size = file.metadata.size;
+        let path = file.local_path.clone();
+        drop(file);
+
+        let mut f = F::create(path).unwrap();
+        f.seek(SeekFrom::Start(size as u64)).unwrap();
+        f.write(&[0]).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    pub fn download(&mut self) {
+        // self.allocate();
+        self.update_sources();
+        let mut metadata = self.file.lock().unwrap().metadata.clone();
+        let block_size = calculate_block_size(metadata.size);
+        let path = self.file.lock().unwrap().local_path.clone();
+        let mut f = F::create(path).unwrap();
+        // TODO: Update sources after every block download
+        for block_id in sort_by_block_availability(self.sources.clone()).iter() {
+            let ref current_sources = self.sources[*block_id];
+            if current_sources.len() > 0 {
+                for source in current_sources {
+                    match TcpStream::connect((*source, BASE_PORT)) {
+                        Ok(mut stream) => {
+                            let payload = serialize(&(metadata.hash.0.clone(), block_id), SizeLimit::Infinite).unwrap();
+                            stream.write_all(&payload).unwrap();
+                            stream.shutdown(Shutdown::Write).unwrap();
+
+                            let mut block = Vec::with_capacity(block_size);
+                            stream.read_to_end(&mut block).unwrap();
+                            if block.len() > 0 {
+                                let mut block_hash = Sha256::new();
+                                block_hash.input(&block);
+                                let mut buf = vec![0; block_hash.output_bytes()];
+                                block_hash.result(&mut buf);
+                                if buf != metadata.hash.1[*block_id] { exit!(1, "HASH MISMATCH"); }
+                                f.seek(SeekFrom::Start((block_id * block_size) as u64 )).unwrap();
+                                f.write_all(&mut block).unwrap();
+                                break;
+                            } else { warn!("Received invalid block data (zero_len)"); }
+                        },
+                        Err(_) => {}
+                    }
+                }
+            }
+        }
+
+        f.seek(SeekFrom::Start((metadata.hash.1.len() * block_size) as u64)).unwrap();
+        f.write_all(&mut metadata.trailing_bytes).unwrap();
     }
 }

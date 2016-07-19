@@ -5,13 +5,14 @@ use std::io::BufReader;
 use std::fs::File as F;
 use std::io::{Seek, SeekFrom};
 use std::net::IpAddr;
+use std::sync::{Arc, Mutex};
 
 use sha2::sha2::Sha256;
 use sha2::Digest;
 
 use helpers::calculate_block_size;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FileMetadata {
     /// SHA256 Hash of the files content and the blocks
     pub hash: (
@@ -19,18 +20,31 @@ pub struct FileMetadata {
         Vec<Vec<u8>>
     ),
     /// Total size of the file in bytes
-    pub size: usize
+    pub size: usize,
+    /// Trailing bytes
+    pub trailing_bytes: Vec<u8>
 }
 
 pub struct File {
     pub metadata: FileMetadata,
     /// Block ID and people downloading it currently
     pub blocks: Vec<(usize, usize)>,
-    pub local_path: PathBuf,
+    pub local_path: PathBuf
+}
+
+pub struct FileHandle {
+    pub file: Arc<Mutex<File>>,
     pub sources: Vec<Vec<IpAddr>>
 }
 
 impl File {
+    pub fn to_handle(self) -> FileHandle {
+        FileHandle {
+            file: Arc::new(Mutex::new(self)),
+            sources: Vec::new()
+        }
+    }
+
     pub fn prepare(path: PathBuf) -> File {
         let f = F::open(path.clone()).unwrap();
         let size = f.metadata().unwrap().len();
@@ -67,7 +81,6 @@ impl File {
                 Err(e) => { exit!(1, "Error occurred whilst reading file ({:?})", e); }
             }
         }
-        println!("TODO: Remaining bytes: {}", block.len());
         pb.add(block_size as u64);
         hash.input(&block);
         let mut hash_res = vec![0; hash.output_bytes()];
@@ -76,12 +89,12 @@ impl File {
         File {
             blocks: (0..block_hashes.len()).map(|i| (i, 0)).collect(),
             local_path: path.canonicalize().unwrap(),
-            sources: Vec::new(),
             metadata: FileMetadata {
                 hash: (
                     hash_res,
                     block_hashes
                 ),
+                trailing_bytes: block,
                 size: size as usize
             }
         }
