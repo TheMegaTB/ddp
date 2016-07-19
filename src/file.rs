@@ -1,20 +1,15 @@
 use pbr::{ProgressBar, Units};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::io::BufReader;
 use std::fs::File as F;
 use std::io::{Seek, SeekFrom};
-use std::net::{TcpStream, Shutdown, IpAddr};
+use std::net::IpAddr;
 
 use sha2::sha2::Sha256;
 use sha2::Digest;
 
-use bincode::serde::*;
-use bincode::SizeLimit;
-
 use helpers::calculate_block_size;
-use networking::BASE_PORT;
-use request::sort_by_block_availability;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FileMetadata {
@@ -31,7 +26,8 @@ pub struct File {
     pub metadata: FileMetadata,
     /// Block ID and people downloading it currently
     pub blocks: Vec<(usize, usize)>,
-    pub local_path: PathBuf
+    pub local_path: PathBuf,
+    pub sources: Vec<Vec<IpAddr>>
 }
 
 impl File {
@@ -80,6 +76,7 @@ impl File {
         File {
             blocks: (0..block_hashes.len()).map(|i| (i, 0)).collect(),
             local_path: path.canonicalize().unwrap(),
+            sources: Vec::new(),
             metadata: FileMetadata {
                 hash: (
                     hash_res,
@@ -98,31 +95,5 @@ impl File {
         let mut buf = vec![0; block_size];
         reader.read_exact(&mut buf).unwrap();
         buf
-    }
-
-    pub fn download(&mut self, sources: Vec<Vec<IpAddr>>) {
-        for block in sort_by_block_availability(sources.clone()).iter() {
-            let ref current_sources = sources[*block];
-            if current_sources.len() > 0 {
-                println!("Currently loading block {} from sources {:?}", block, current_sources);
-                for source in current_sources {
-                    match TcpStream::connect((*source, BASE_PORT)) {
-                        Ok(mut stream) => {
-                            let payload = serialize(&(self.metadata.hash.0.clone(), block), SizeLimit::Infinite).unwrap();
-                            stream.write_all(&payload).unwrap();
-                            stream.shutdown(Shutdown::Write).unwrap();
-
-                            let mut block = Vec::with_capacity(calculate_block_size(self.metadata.size));
-                            stream.read_to_end(&mut block).unwrap();
-                            if block.len() > 0 {
-                                // TODO: Write block to file
-                                break;
-                            } else { warn!("Received invalid block data (zero_len)"); }
-                        },
-                        Err(_) => {}
-                    }
-                }
-            }
-        }
     }
 }

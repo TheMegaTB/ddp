@@ -31,7 +31,7 @@ mod announce;
 use announce::announce;
 
 mod request;
-use request::*;
+// use request::*;
 
 /// Constant containing version string provided by cargo
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -57,13 +57,9 @@ fn main() {
     {
         let uuid = files.lock().unwrap()[0].metadata.hash.0.clone();
         std::thread::sleep(std::time::Duration::from_millis(200));
-        let meta = request_metadata(&uuid).unwrap();
-        let sources = request_sources(&uuid, meta.size);
-        let mut file = File {
-            metadata: meta,
-            blocks: Vec::new(),
-            local_path: PathBuf::from("./download")
-        };
-        file.download(sources);
+        // let meta = request_metadata(&uuid).unwrap();
+        // let sources = request_sources(&uuid, meta.size);
+        let mut file = File::from_metadata(&uuid, PathBuf::from("./download")).unwrap();
+        file.download();
     }
 }
